@@ -57,7 +57,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
       #Desechar eventos muy antiguos
       if ((packet_end_hour == now_hour - 1) && (now_min > delayed)) || 
          (now.to_i - packet_end >  60 * 60) then
-        elsif packet_start < limit.to_i
+      elsif packet_start < limit.to_i
         # code
         packet_start = limit.to_i
         event.set("first_switched", limit.to_i)
@@ -170,6 +170,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     generatedPackets.each do |e|
       yield e
     end
-    filter_matched(event)
+    # filter_matched(event)
+    event.cancel
   end  # def filter(event)
 end # class LogStash::Filters::Example
