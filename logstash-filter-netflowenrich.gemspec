@@ -1,9 +1,9 @@
 Gem::Specification.new do |s|
   s.name = 'logstash-filter-netflowenrich'
-  s.version         = '1.0.0'
+  s.version = '1.0.3'
   s.licenses = ['Apache License (2.0)']
-  s.summary = "This example filter replaces the contents of the message field with the specified value."
-  s.description     = "This gem is a Logstash plugin required to be installed on top of the Logstash core pipeline using $LS_HOME/bin/logstash-plugin install gemname. This gem is not a stand-alone program"
+  s.summary = "This filter split ths filter split the json package into one-minute subpackages to be able to evaluate it. Fields like timestamp, first-switched, pkts and bytes are modified in the process."
+  s.description = "This gem is a Logstash plugin required to be installed on top of the Logstash core pipeline using $LS_HOME/bin/logstash-plugin install gemname. This gem is not a stand-alone program"
   s.authors = ["Elastic"]
   s.email = 'systems@redborder.com'
   s.homepage = "https://www.redborder.com"
