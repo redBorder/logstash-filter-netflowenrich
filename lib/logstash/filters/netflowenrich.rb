@@ -43,16 +43,16 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
       #Desechar eventos muy antiguos
       if ((packet_end_time_hour == current_time.hour - 1) && (current_time.min > delayed)) || 
          (current_time.to_i - packet_end_time >  3600) then
-         @logger.warning("netflow_enrich : Dropped packet #{event.to_s} because its realtime processor is already shutdown.")
+         @logger.error("netflow_enrich : Dropped packet #{event.to_s} because its realtime processor is already shutdown.")
       elsif packet_start_time < limit.to_i
-        @logger.warning("netflow_enrich : Packet #{event.to_s} first switched was corrected because it overpassed the lower limit (event too old).")
+        @logger.error("netflow_enrich : Packet #{event.to_s} first switched was corrected because it overpassed the lower limit (event too old).")
         packet_start_time = limit.to_i
         event.set("first_switched", limit.to_i)
       end
 
       #eventos correctos en el futuro
       if ((packet_end_time > current_time.to_i) && (packet_end_time_hour != packet_start_hour)) || (packet_end_time - current_time.to_i  >  3600) then
-        @logger.warning("netflow_enrich : Packet #{event.to_s} ended in a future segment and I modified its last and/or first switched values.")
+        @logger.error("netflow_enrich : Packet #{event.to_s} ended in a future segment and I modified its last and/or first switched values.")
         event.set("timestamp", current_time.to_i)
         packet_end_time = current_time.to_i
         if !(packet_end_time > packet_start_time) then
