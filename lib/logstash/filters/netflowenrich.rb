@@ -2,26 +2,9 @@
 require "logstash/filters/base"
 require "logstash/namespace"
 
-# This example filter will replace the contents of the default
-# message field with whatever you specify in the configuration.
-#
-# It is only intended to be used as an example.
 class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
 
-  # Setting the config_name here is required. This is how you
-  # configure this filter from your Logstash config.
-  #
-  # filter {
-  #   example {
-  #     message => "My message..."
-  #   }
-  # }
-  #
   config_name "netflowenrich"
-
-  # Replace the message with this value.
-  config :message, :validate => :string, :default => "Hello World!"
-
 
   public
   def register
@@ -31,83 +14,74 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
   public
   def filter(event)
 
-    #Codigo traducido
     delayed = 15
-    now = Time.now.utc
+    current_time = Time.now.utc
     generatedPackets = []
-    if event.include?("first_switched") && event.include?("timestamp") then
 
-      packet_start = event.get("first_switched").to_i #se asume que son segundos desde época unix en UTC
-      packet_end = event.get("timestamp").to_i
+    # add the timestamp if missing in the event
+    event.set("timestamp", current_time.to_i) if !event.include?("timestamp")
 
-      now_hour = now.hour
-      now_min = now.min
+    # thread 'first_switched' events as a serie of events over time
+    if event.include?("first_switched") then
 
-      packet_end_hour = Time.at(event.get("timestamp")).utc.hour # .at() devuelve el tiempo local, necesario volver a representarlo en UTC
-      packet_start_hour = Time.at(event.get("first_switched")).utc.hour
+      e_first_switched_timestamp = event.get("first_switched")
+      e_timestamp = event.get("timestamp")
 
+      packet_start_time = e_first_switched_timestamp.to_i 
+      packet_end_time = e_timestamp.to_i
 
-      if now_min < delayed then
-        an_hour_ago = now - 3600
+      packet_end_time_hour = Time.at(e_timestamp).utc.hour 
+      packet_start_time_hour = Time.at(e_first_switched_timestamp).utc.hour
+
+      if current_time.min < delayed then
+        an_hour_ago = current_time - 3600
         limit = Time.utc(an_hour_ago.year, an_hour_ago.month, an_hour_ago.day, an_hour_ago.hour, 0, 0) # hora anterior en punto
       else
-        limit = Time.utc(now.year, now.month, now.day, now.hour, 0, 0) # hora actual en punto
+        limit = Time.utc(current_time.year, current_time.month, current_time.day, current_time.hour, 0, 0) # hora actual en punto
       end
 
       #Desechar eventos muy antiguos
-      if ((packet_end_hour == now_hour - 1) && (now_min > delayed)) || 
-         (now.to_i - packet_end >  60 * 60) then
-      elsif packet_start < limit.to_i
-        # code
-        packet_start = limit.to_i
+      if ((packet_end_time_hour == current_time.hour - 1) && (current_time.min > delayed)) || 
+         (current_time.to_i - packet_end_time >  3600) then
+         @logger.warning("netflow_enrich : Dropped packet #{event.to_s} because its realtime processor is already shutdown.")
+      elsif packet_start_time < limit.to_i
+        @logger.warning("netflow_enrich : Packet #{event.to_s} first switched was corrected because it overpassed the lower limit (event too old).")
+        packet_start_time = limit.to_i
         event.set("first_switched", limit.to_i)
       end
 
       #eventos correctos en el futuro
-      if ((packet_end > now.to_i) && (packet_end_hour != packet_start_hour)) ||
-         (packet_end - now.to_i  >  60 * 60) then
-        event.set("timestamp", now.to_i)
-        packet_end = now.to_i
-        if !(packet_end > packet_start) then
-          event.set("first_switched", now.to_i)
-          packet_start = now.to_i
+      if ((packet_end_time > current_time.to_i) && (packet_end_time_hour != packet_start_hour)) || (packet_end_time - current_time.to_i  >  3600) then
+        @logger.warning("netflow_enrich : Packet #{event.to_s} ended in a future segment and I modified its last and/or first switched values.")
+        event.set("timestamp", current_time.to_i)
+        packet_end_time = current_time.to_i
+        if !(packet_end_time > packet_start_time) then
+          event.set("first_switched", current_time.to_i)
+          packet_start_time = current_time.to_i
         end
       end
-    # -------------------------------------------
 
-      this_end = packet_start
+      this_end = packet_start_time
       bytes = 0
       pkts = 0
+      bytes = event.get("bytes").to_i if event.include?("bytes")
+      pkts = event.get("pkts").to_i if event.include?("pkts") 
 
-      if event.include?("bytes") then
-        bytes = event.get("bytes").to_i
-      end
-
-      if event.include?("pkts") then
-        pkts = event.get("pkts").to_i
-      end
-
-      totalDiff = packet_end - packet_start;
+      total_diff_time = packet_end_time - packet_start_time;
       bytes_count = 0
       pkts_count = 0
       begin
         this_start = this_end
         this_end = this_start + 60 - Time.at(this_start).utc.sec
-        if this_end > packet_end then
-          this_end = packet_end
-        end
-        diff = this_end - this_start
+        this_end = packet_end_time if this_end > packet_end_time
+        this_diff = this_end - this_start
 
-        if (totalDiff == 0) then
-          this_bytes = bytes
-        else
-          this_bytes = (bytes * diff / totalDiff).ceil
-        end
-
-        if (totalDiff == 0) then
+        if (total_diff_time == 0) then
+          this_bytes = bytes 
           this_pkts = pkts
         else
-          this_pkts = (pkts * diff / totalDiff).ceil
+          this_bytes = (bytes * this_diff / total_diff_time).ceil
+          this_pkts = (pkts * this_diff / total_diff_time).ceil
         end
         bytes_count += this_bytes
         pkts_count += this_pkts
@@ -119,58 +93,36 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
         to_send.set("pkts", this_pkts)
         to_send.remove("first_switched")
         generatedPackets.push(to_send)
-      end while (this_end < packet_end)
 
+      end while (this_end < packet_end_time)
+
+      # adjust last event in generatedPackets if there were 'rounding' errors
       if (bytes != bytes_count) || (pkts != pkts_count) then
-        last_index = generatedPackets.size - 1
-        last = generatedPackets[last_index]
-        new_pkts = last.get("pkts").to_i + (pkts - pkts_count)
-        new_bytes = last.get("bytes").to_i + (bytes - bytes_count)
+        last_event = generatedPackets[-1]
 
-        if (new_pkts > 0) then
-          last.set("pkts", new_pkts)
-        end
-        if (new_bytes > 0) then
-          last.set("bytes", new_bytes)
-        end
+        # adapt the bytes and packets values
+        new_pkts = last_event.get("pkts").to_i + (pkts - pkts_count)
+        new_bytes = last_event.get("bytes").to_i + (bytes - bytes_count)
+        last_event.set("pkts", new_pkts) if (new_pkts > 0)
+        last_event.set("bytes", new_bytes) if (new_bytes > 0)
 
-        generatedPackets[last_index]=last
+        generatedPackets[-1]=last_event
       end
-
-    elsif event.include?("timestamp") then
-      #try
-      if event.include?("bytes")
-        bytes = event.get("bytes") 
-        generatedPackets.push(event)
-      else
-        return generatedPackets
-      end
-      #catch
     else
-      #try
-      if event.include?("bytes")
-        bytes = event.get("bytes")
-        event.set("bytes", bytes)
-        event.set("timestamp", timestamp)
-        generatedPackets.push(last)
-      else
-        return generatedPackets
-      end
-      #catch
+      generatedPackets.push(event)
     end
+
     # We will leave the duration of the message only on the first generated packet
-    generatedPackets.each_with_index do |packet,index|
-      if index == 0 then next end
+    generatedPackets.drop(1) do |packet|
       packet.remove("duration")
     end
 
-    #return generatedPackets 
-    #esto debe devolver una lista de eventos
-    
+    #return all events stored in generatedPackets 
+    #esto debe devolver una lista de eventos    
     generatedPackets.each do |e|
       yield e
     end
-    # filter_matched(event)
-    event.cancel
+    event.cancel if (generatedPackets.count > 1 or event.include?("first_switched"))
+
   end  # def filter(event)
 end # class LogStash::Filters::Example
