@@ -55,7 +55,7 @@ bundle exec rspec
 
 - Build your plugin gem
 ```sh
-gem build logstash-filter-macvendorsenrich.gemspec
+gem build logstash-filter-netflowenrich.gemspec
 ```
 - Install the plugin from the Logstash home
 ```sh
