@@ -2,127 +2,202 @@
 require "logstash/filters/base"
 require "logstash/namespace"
 
-class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
+require_relative "util/location_constant"
+require_relative "util/postgresql_manager"
+require_relative "util/memcached_config"
+require_relative "store/store_manager"
 
+class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
+  include LocationConstant
   config_name "netflowenrich"
 
+  config :database_name,             :validate => :string, :default => "redborder",                    :required => false
+  config :user,                      :validate => :string, :default => "redborder",                    :required => false
+  config :password,                  :validate => :string, :default => "",                             :required => false
+  config :port,                      :validate => :number, :default => "5432",                         :required => false
+  config :host,                      :validate => :string, :default => "postgresql.redborder.cluster", :required => false
+  config :memcached_server,          :validate => :string, :default => "",                             :required => false
+
+  DATASOURCE="rb_flow"
+  DELAYED_REALTIME_TIME = 15
   public
   def register
     # Add instance variables
+    @memcached_server = MemcachedConfig::servers.first if @memcached_server.empty?
+    @memcached = Dalli::Client.new(@memcached_server, {:expires_in => 0})
+    @postgresql_manager = PostgresqlManager.new(@memcached, @database_name, @user, @password, @port, @host)
+    @store_manager = StoreManager.new(@memcached)
+    @counter_store = @memcached.get("counter") || {}
+    @flows_number = @memcached.get(FLOWS_NUMBER) || {}
   end # def register
 
   public
-  def filter(event)
+  def calculate_duration(msg)
+    timestamp = msg[TIMESTAMP]
+    first_switched = msg[FIRST_SWITCHED]
 
-    delayed = 15
-    current_time = Time.now.utc
-    generatedPackets = []
+    packet_end = (timestamp) ? timestamp.to_i : Time.now.to_i
+    packet_start = (first_switched) ? timestamp.to_i : packet_end
 
-    # add the timestamp if missing in the event
-    event.set("timestamp", current_time.to_i) if !event.include?("timestamp")
-
-    # thread 'first_switched' events as a serie of events over time
-    if event.include?("first_switched") then
-
-      e_first_switched_timestamp = event.get("first_switched")
-      e_timestamp = event.get("timestamp")
-
-      packet_start_time = e_first_switched_timestamp.to_i 
-      packet_end_time = e_timestamp.to_i
-
-      packet_end_time_hour = Time.at(e_timestamp).utc.hour 
-      packet_start_time_hour = Time.at(e_first_switched_timestamp).utc.hour
-
-      if current_time.min < delayed then
-        an_hour_ago = current_time - 3600
-        limit = Time.utc(an_hour_ago.year, an_hour_ago.month, an_hour_ago.day, an_hour_ago.hour, 0, 0) # hora anterior en punto
-      else
-        limit = Time.utc(current_time.year, current_time.month, current_time.day, current_time.hour, 0, 0) # hora actual en punto
+    duration = packet_end - packet_start
+    duration = 1 if duration < 0
+    return duration
+  end
+ 
+  def split_flow(msg)
+    #longMark = Time.now.to_i
+    generated_packets = []
+    now = Time.now.utc
+    if msg[FIRST_SWITCHED] && msg[TIMESTAMP] 
+      packet_start = Time.at(msg[FIRST_SWITCHED]).utc
+      packet_end = Time.at(msg[TIMESTAMP]).utc
+      now_our = now.hour
+      packet_end_hour = packet_end.hour
+      
+      #// Get the lower limit date time that a packet can have
+      limit = (now.min < DELAYED_REALTIME_TIME) ?  (now - (now.hour * 60 * 60) - (now.min * 60) - now.sec) : (now - (now.min * 60) - now.sec)
+      
+      #// Discard too old events
+      if ((packet_end_hour == now.hour - 1 && now.min > DELAYED_REALTIME_TIME) || (now.to_i - packet_end.to_i > 1000 * 60 * 60))
+        @logger.warn("Dropped packet {} because its realtime processor is already shutdown.")
+      elsif packet_start < limit
+        #// If the lower limit date time is overpassed, correct it
+        @logger.warn("Packet {} first switched was corrected because it overpassed the lower limit (event too old).")
+        packet_start = limit
+        msg[FIRST_SWITCHED] = limit.to_i
       end
+       
+      #// Correct events in the future
+      if (packet_end > now && ((packet_end.hour != packet_start.hour) || (packet_end.to_i - now.to_i > 1000 * 60 * 60)))
+        @logger.warn("Packet {} ended in a future segment and I modified its last and/or first switched values")
+        msg[TIMESTAMP] = now.to_i
+        packet_end = now
+        
+        msg[FIRST_SWITCHED] = now.to_i unless packet_end > packet_start
+      end   
 
-      #Desechar eventos muy antiguos
-      if ((packet_end_time_hour == current_time.hour - 1) && (current_time.min > delayed)) || 
-         (current_time.to_i - packet_end_time >  3600) then
-         @logger.error("netflow_enrich : Dropped packet #{event.to_s} because its realtime processor is already shutdown.")
-      elsif packet_start_time < limit.to_i
-        @logger.error("netflow_enrich : Packet #{event.to_s} first switched was corrected because it overpassed the lower limit (event too old).")
-        packet_start_time = limit.to_i
-        event.set("first_switched", limit.to_i)
-      end
-
-      #eventos correctos en el futuro
-      if ((packet_end_time > current_time.to_i) && (packet_end_time_hour != packet_start_hour)) || (packet_end_time - current_time.to_i  >  3600) then
-        @logger.error("netflow_enrich : Packet #{event.to_s} ended in a future segment and I modified its last and/or first switched values.")
-        event.set("timestamp", current_time.to_i)
-        packet_end_time = current_time.to_i
-        if !(packet_end_time > packet_start_time) then
-          event.set("first_switched", current_time.to_i)
-          packet_start_time = current_time.to_i
-        end
-      end
-
-      this_end = packet_start_time
-      bytes = 0
-      pkts = 0
-      bytes = event.get("bytes").to_i if event.include?("bytes")
-      pkts = event.get("pkts").to_i if event.include?("pkts") 
-
-      total_diff_time = packet_end_time - packet_start_time;
-      bytes_count = 0
-      pkts_count = 0
+      this_end = packet_start
+      bytes = pkts = 0
       begin
-        this_start = this_end
-        this_end = this_start + 60 - Time.at(this_start).utc.sec
-        this_end = packet_end_time if this_end > packet_end_time
-        this_diff = this_end - this_start
-
-        if (total_diff_time == 0) then
-          this_bytes = bytes 
-          this_pkts = pkts
-        else
-          this_bytes = (bytes * this_diff / total_diff_time).ceil
-          this_pkts = (pkts * this_diff / total_diff_time).ceil
-        end
-        bytes_count += this_bytes
-        pkts_count += this_pkts
-
-        #crear el evento nuevo para añadir cada termino que ya existia
-        to_send = event.clone()
-        to_send.set("timestamp", this_start)
-        to_send.set("bytes", this_bytes)
-        to_send.set("pkts", this_pkts)
-        to_send.remove("first_switched")
-        generatedPackets.push(to_send)
-
-      end while (this_end < packet_end_time)
-
-      # adjust last event in generatedPackets if there were 'rounding' errors
-      if (bytes != bytes_count) || (pkts != pkts_count) then
-        last_event = generatedPackets[-1]
-
-        # adapt the bytes and packets values
-        new_pkts = last_event.get("pkts").to_i + (pkts - pkts_count)
-        new_bytes = last_event.get("bytes").to_i + (bytes - bytes_count)
-        last_event.set("pkts", new_pkts) if (new_pkts > 0)
-        last_event.set("bytes", new_bytes) if (new_bytes > 0)
-
-        generatedPackets[-1]=last_event
+        bytes = Integer(msg[BYTES]) if msg[BYTES]
+      rescue
+        @logger.warn("Invalid number of bytes in packet")
+        return generated_packets
       end
-    else
-      generatedPackets.push(event)
+       
+      begin
+        pkts = Integer(msg[PKTS]) if msg[PKTS]
+      rescue
+         @logger.warn("Invalid number of packets in packet")
+        return generated_packets
+      end
+      
+      total_diff = 0
+
+      begin
+        total_diff = packet_end.to_i - packet_start.to_i
+        diff = this_bytes = this_pkts = nil
+        bytes_count = pkts_count = 0
+        loop_counter = 0
+        loop do 
+          loop_counter += 1
+          this_start = this_end
+          this_end = Time.at(this_start.to_i + (60 - this_start.sec))
+          this_end = packet_end if this_end > packet_end
+          diff = this_end.to_i - this_start.to_i
+          this_bytes = (total_diff == 0) ? bytes : Integer((bytes * diff / total_diff).ceil)
+          this_pkts  = (total_diff == 0) ? pkts : Integer((pkts * diff / total_diff).ceil)
+          bytes_count += this_bytes
+          pkts_count += this_pkts
+          
+          to_send = {}
+          to_send.merge!(msg)
+          to_send[TIMESTAMP] = this_start.to_i
+          to_send[BYTES] = this_bytes.to_i
+          to_send[PKTS] = this_pkts
+          to_send.delete(FIRST_SWITCHED)
+          generated_packets.push(to_send)
+          break if (this_end >= packet_end)
+        end
+        if (bytes != bytes_count || pkts != pkts_count) 
+          last_index = generated_packets.size - 1
+          last = generated_packets[last_index]
+          new_pkts = Integer(last[PKTS]) + (pkts - pkts_count)
+          new_bytes = Integer(last[BYTES]) + (bytes - bytes_count)
+
+          last[PKTS] = new_pkts if new_pkts > 0
+          last[BYTES] = new_bytes if new_bytes > 0
+
+           generated_packets[last_index] = last 
+        end
+      rescue => e
+        @logger.warn("Invalid time difference in packet #{loop_counter}: #{e.message}")
+        return generated_packets
+      end
+    elsif msg[TIMESTAMP]
+      begin  
+        if msg[BYTES] 
+          bytes = Integer(msg[BYTES])
+          msg[BYTES] = bytes
+          generated_packets.push(msg)
+        else
+          @logger.warn("Event doestn contain bytes")
+          return generated_packets
+        end
+      rescue
+        @logger.warn("Invalid number of bytes in packet")
+        return generated_packets
+      end
+    else #.. try..
+      begin
+        if msg[BYTES]
+          bytes = Integer(msg[BYTES])
+          msg[BYTES] = bytes
+          @logger.warn("Packet without timestamp")
+          msg[TIMESTAMP] = Time.now.to_i
+          generated_events.push(msg)
+        else
+          @logger.warn("Event doestn contain bytes")
+          return generated_packets
+        end  
+      rescue
+        @logger.warn("Invalid number of bytes in packet")
+        return generated_packets
+      end
     end
 
-    # We will leave the duration of the message only on the first generated packet
-    generatedPackets.drop(1) do |packet|
-      packet.remove("duration")
+    generated_packets.each do |packet|
+     next if generated_packets.index(packet) == 0
+     packet.delete(DURATION)
     end
+    return generated_packets
+  end
 
-    #return all events stored in generatedPackets 
-    #esto debe devolver una lista de eventos    
-    generatedPackets.each do |e|
+  def filter(event)
+    message = {}
+    message = event.to_hash
+    message_enrichment_store = @store_manager.enrich(message)
+    message_enrichment_store[DURATION]  = calculate_duration(message_enrichment_store)
+    splitted_msg = split_flow(message_enrichment_store)
+    
+    namespace = message_enrichment_store[NAMESPACE_UUID]
+    datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE
+
+    counter_store = @memcached.get(COUNTER_STORE) || {}
+    counter = counter_store[datasource] || 0
+    #@memcached.set(COUNTER_STORE,counter_store)
+    flows_number = @memcached.get(FLOWS_NUMBER) || {}
+    flows = flows_number[datasource] || 0
+    splitted_msg.each do |msg|
+      counter += 1
+      msg["flows_count"] = flows
+      e = LogStash::Event.new
+      msg.each { |k,v| e.set(k,v) }
       yield e
-    end
-    event.cancel if (generatedPackets.count > 1 or event.include?("first_switched"))
+    end 
 
+    counter_store[datasource] = counter 
+    @memcached.set(COUNTER_STORE,counter_store)
+    event.cancel
   end  # def filter(event)
 end # class LogStash::Filters::Example
