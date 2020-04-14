@@ -134,7 +134,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
           msg[BYTES] = bytes
           generated_packets.push(msg)
         else
-          @logger.warn("Event doestn contain bytes")
+          @logger.warn("No bytes field in event")
           return generated_packets
         end
       rescue
@@ -150,7 +150,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
           msg[TIMESTAMP] = Time.now.to_i
           generated_events.push(msg)
         else
-          @logger.warn("Event doestn contain bytes")
+          @logger.warn("No bytes field in event")
           return generated_packets
         end  
       rescue
