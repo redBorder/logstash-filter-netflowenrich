@@ -4,6 +4,7 @@ require "logstash/namespace"
 
 require_relative "util/location_constant"
 require_relative "util/memcached_config"
+require_relative "store/store_manager"
 
 class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
   include LocationConstant
@@ -15,6 +16,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
   DELAYED_REALTIME_TIME = 15
   public
   def register
+    puts "netflownerich loaded!"
     # Add instance variables
     @memcached_server = MemcachedConfig::servers.first if @memcached_server.empty?
     @memcached = Dalli::Client.new(@memcached_server, {:expires_in => 0})
