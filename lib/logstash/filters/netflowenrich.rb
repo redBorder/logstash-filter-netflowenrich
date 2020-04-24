@@ -182,9 +182,10 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     message_enrichment_store = @store_manager.enrich(message)
     message_enrichment_store[DURATION]  = calculate_duration(message_enrichment_store)
     splitted_msg = split_flow(message_enrichment_store)
-    
+
+    datasource = DATASOURCE
     namespace = message_enrichment_store[NAMESPACE_UUID]
-    datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE
+    datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE if (namespace && !namespace.empty?)
 
     counter_store = @memcached.get(COUNTER_STORE) || {}
     counter = counter_store[datasource] || 0

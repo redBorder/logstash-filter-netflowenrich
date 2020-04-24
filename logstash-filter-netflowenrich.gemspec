@@ -1,6 +1,6 @@
 Gem::Specification.new do |s|
   s.name = 'logstash-filter-netflowenrich'
-  s.version = '1.0.13'
+  s.version = '1.0.14'
   s.licenses = ['GNU AFFERO GENERAL PUBLIC LICENSE']
   s.summary = "plugin to split 'first_switched' flow data over time"
   s.description = "This gem is a Logstash plugin required to be installed on top of the Logstash core pipeline using $LS_HOME/bin/logstash-plugin install gemname. This gem is not a stand-alone program"
