@@ -18,7 +18,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
   def register
     puts "netflownerich loaded!"
     # Add instance variables
-    @memcached_server = MemcachedConfig::servers.first if @memcached_server.empty?
+    @memcached_server = MemcachedConfig::servers if @memcached_server.empty?
     @memcached = Dalli::Client.new(@memcached_server, {:expires_in => 0})
 
     @store_manager = StoreManager.new(@memcached)
