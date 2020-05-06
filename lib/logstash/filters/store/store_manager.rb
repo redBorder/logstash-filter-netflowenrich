@@ -29,7 +29,6 @@ class StoreManager
   def update_stores
     @last_stores_update = Time.now
     @stores = @memcached.get_multi(@stores_list) || {}
-    puts "[NETFLOWENRICH] Updating stores"
   end
 
   def enrich(message)

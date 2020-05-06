@@ -23,9 +23,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     # Add instance variables
     @memcached_server = MemcachedConfig::servers if @memcached_server.empty?
     @memcached = Dalli::Client.new(@memcached_server, {:expires_in => 0})
-    puts "before"
     @store_manager = StoreManager.new(@memcached, @update_stores_rate)
-    puts "after"
   end # def register
 
   public
