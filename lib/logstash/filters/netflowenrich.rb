@@ -173,11 +173,10 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     message = event.to_hash
     message_enrichment_store = @store_manager.enrich(message)
     message_enrichment_store[DURATION]  = calculate_duration(message_enrichment_store)
-   
+
+    datasource = DATASOURCE
     if @flow_counter or @counter_store_counter
-      datasource = DATASOURCE
-      namespace = message_enrichment_store[NAMESPACE_UUID]
-      datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE if (namespace && !namespace.empty?)
+      datasource = store_enrichment[NAMESPACE_UUID] ? DATASOURCE + "_" + store_enrichment[NAMESPACE_UUID] :       DATASOURCE
 
       if @flow_counter 
         flows_number = @memcached.get(FLOWS_NUMBER) || {}
