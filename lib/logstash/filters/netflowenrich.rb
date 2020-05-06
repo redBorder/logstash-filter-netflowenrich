@@ -187,9 +187,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     splitted_msg = split_flow(message_enrichment_store)
 
     splitted_msg.each do |msg|
-      e = LogStash::Event.new
-      msg.each { |k,v| e.set(k,v) }
-      yield e
+      yield LogStash::Event.new(msg)
     end 
 
     if @counter_store_counter
