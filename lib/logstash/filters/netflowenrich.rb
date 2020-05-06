@@ -173,16 +173,18 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     message = event.to_hash
     message_enrichment_store = @store_manager.enrich(message)
     message_enrichment_store[DURATION]  = calculate_duration(message_enrichment_store)
-    
-    datasource = DATASOURCE
-    namespace = message_enrichment_store[NAMESPACE_UUID]
-    datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE if (namespace && !namespace.empty?)
-    
-    if @flow_counter 
-      flows_number = @memcached.get(FLOWS_NUMBER) || {}
-      message_enrichment_store["flows_count"] = (flows_number[datasource] || 0)
-    end
    
+    if @flow_counter or @counter_store_counter
+      datasource = DATASOURCE
+      namespace = message_enrichment_store[NAMESPACE_UUID]
+      datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE if (namespace && !namespace.empty?)
+
+      if @flow_counter 
+        flows_number = @memcached.get(FLOWS_NUMBER) || {}
+        message_enrichment_store["flows_count"] = (flows_number[datasource] || 0)
+      end
+    end
+
     splitted_msg = split_flow(message_enrichment_store)
 
     splitted_msg.each do |msg|
