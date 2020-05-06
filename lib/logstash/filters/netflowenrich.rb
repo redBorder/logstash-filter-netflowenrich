@@ -10,20 +10,22 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
   include LocationConstant
   config_name "netflowenrich"
 
-  config :memcached_server,          :validate => :string, :default => "",                             :required => false
+  config :memcached_server,          :validate => :string,  :default => "",                             :required => false
+  config :counter_store_counter,             :validate => :boolean, :default => false,                          :required => false
+  config :flow_counter,              :validate => :boolean, :default => false,                          :required => false
+  config :update_stores_rate,        :validate => :number,  :default => 60,                             :required => false
 
   DATASOURCE="rb_flow"
   DELAYED_REALTIME_TIME = 15
+
   public
   def register
-    puts "netflownerich loaded!"
     # Add instance variables
     @memcached_server = MemcachedConfig::servers if @memcached_server.empty?
     @memcached = Dalli::Client.new(@memcached_server, {:expires_in => 0})
-
-    @store_manager = StoreManager.new(@memcached)
-    @counter_store = @memcached.get("counter") || {}
-    @flows_number = @memcached.get(FLOWS_NUMBER) || {}
+    puts "before"
+    @store_manager = StoreManager.new(@memcached, @update_stores_rate)
+    puts "after"
   end # def register
 
   public
@@ -54,17 +56,17 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
       
       #// Discard too old events
       if ((packet_end_hour == now.hour - 1 && now.min > DELAYED_REALTIME_TIME) || (now.to_i - packet_end.to_i > 1000 * 60 * 60))
-        @logger.warn("Dropped packet {} because its realtime processor is already shutdown.")
+        @logger.debug? && @logger.warn("Dropped packet {} because its realtime processor is already shutdown.")
       elsif packet_start < limit
         #// If the lower limit date time is overpassed, correct it
-        @logger.warn("Packet {} first switched was corrected because it overpassed the lower limit (event too old).")
+        @logger.debug? && @logger.warn("Packet {} first switched was corrected because it overpassed the lower limit (event too old).")
         packet_start = limit
         msg[FIRST_SWITCHED] = limit.to_i
       end
        
       #// Correct events in the future
       if (packet_end > now && ((packet_end.hour != packet_start.hour) || (packet_end.to_i - now.to_i > 1000 * 60 * 60)))
-        @logger.warn("Packet {} ended in a future segment and I modified its last and/or first switched values")
+        @logger.debug? && @logger.warn("Packet {} ended in a future segment and I modified its last and/or first switched values")
         msg[TIMESTAMP] = now.to_i
         packet_end = now
         
@@ -76,14 +78,14 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
       begin
         bytes = Integer(msg[BYTES]) if msg[BYTES]
       rescue
-        @logger.warn("Invalid number of bytes in packet")
+        @logger.debug? && @logger.warn("Invalid number of bytes in packet")
         return generated_packets
       end
        
       begin
         pkts = Integer(msg[PKTS]) if msg[PKTS]
       rescue
-         @logger.warn("Invalid number of packets in packet")
+        @logger.debug? && @logger.warn("Invalid number of packets in packet")
         return generated_packets
       end
       
@@ -126,7 +128,7 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
            generated_packets[last_index] = last 
         end
       rescue => e
-        @logger.warn("Invalid time difference in packet #{loop_counter}: #{e.message}")
+        @logger.debug? && @logger.warn("Invalid time difference in packet #{loop_counter}: #{e.message}")
         return generated_packets
       end
     elsif msg[TIMESTAMP]
@@ -136,11 +138,11 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
           msg[BYTES] = bytes
           generated_packets.push(msg)
         else
-          @logger.warn("No bytes field in event")
+          @logger.debug? && @logger.warn("No bytes field in event")
           return generated_packets
         end
       rescue
-        @logger.warn("Invalid number of bytes in packet")
+        @logger.debug? && @logger.warn("Invalid number of bytes in packet")
         return generated_packets
       end
     else #.. try..
@@ -148,15 +150,15 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
         if msg[BYTES]
           bytes = Integer(msg[BYTES])
           msg[BYTES] = bytes
-          @logger.warn("Packet without timestamp")
+          @logger.debug? && @logger.warn("Packet without timestamp")
           msg[TIMESTAMP] = Time.now.to_i
           generated_events.push(msg)
         else
-          @logger.warn("No bytes field in event")
+          @logger.debug? && @logger.warn("No bytes field in event")
           return generated_packets
         end  
       rescue
-        @logger.warn("Invalid number of bytes in packet")
+        @logger.debug? && @logger.warn("Invalid number of bytes in packet")
         return generated_packets
       end
     end
@@ -173,27 +175,31 @@ class LogStash::Filters::Netflowenrich < LogStash::Filters::Base
     message = event.to_hash
     message_enrichment_store = @store_manager.enrich(message)
     message_enrichment_store[DURATION]  = calculate_duration(message_enrichment_store)
-    splitted_msg = split_flow(message_enrichment_store)
-
+    
+    if @flow_counter 
+      flows_number = @memcached.get(FLOWS_NUMBER) || {}
+      message_enrichment_store["flows_count"] = (flows_number[datasource] || 0)
+    end
+   
     datasource = DATASOURCE
     namespace = message_enrichment_store[NAMESPACE_UUID]
     datasource = (namespace) ? DATASOURCE + "_" + namespace : DATASOURCE if (namespace && !namespace.empty?)
 
-    counter_store = @memcached.get(COUNTER_STORE) || {}
-    counter = counter_store[datasource] || 0
-    #@memcached.set(COUNTER_STORE,counter_store)
-    flows_number = @memcached.get(FLOWS_NUMBER) || {}
-    flows = flows_number[datasource] || 0
+    splitted_msg = split_flow(message_enrichment_store)
+
     splitted_msg.each do |msg|
-      counter += 1
-      msg["flows_count"] = flows
       e = LogStash::Event.new
       msg.each { |k,v| e.set(k,v) }
       yield e
     end 
 
-    counter_store[datasource] = counter 
-    @memcached.set(COUNTER_STORE,counter_store)
+    if @counter_store_counter
+      counter_store = @memcached.get(COUNTER_STORE) || {}
+      counter = counter_store[datasource] || 0
+      counter_store[datasource] = counter + splitted_msg.size
+      @memcached.set(COUNTER_STORE,counter_store)
+    end
+
     event.cancel
   end  # def filter(event)
-end # class LogStash::Filters::Example
+end # class LogStash::Filters::Netflowenrich
